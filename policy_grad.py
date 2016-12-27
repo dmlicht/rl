@@ -1,7 +1,10 @@
+from typing import Sequence
+
 import gym
 import numpy as np
 from keras.models import Sequential
 from keras.layers import Dense, Dropout
+from sklearn.linear_model import SGDClassifier
 
 env_name = 'CartPole-v0'
 MONITOR_FILE = 'results/' + env_name
@@ -34,27 +37,53 @@ model.add(Dropout(0.5))  # prevent overfitting
 model.add(hidden_layer)
 model.compile(loss='mse', optimizer='rmsprop', metrics=['accuracy'])
 
+sgdc = SGDClassifier()
+
 actions = []
 rewards = []
 observations = []
+policies = []
 done = False
 episode = 0
+
+
+def to_values(rewards: Sequence) -> Sequence:
+    discounted = list(rewards)
+    for ii in range(1, len(reward) + 1):
+        if ii == 1: discounted[-ii] = rewards[-ii]
+        discounted[-ii] = rewards[-ii] + (DISCOUNT * discounted[1 - ii])
+    return discounted
+
+
 while not episode < N_EPISODES:
     if RENDER: env.render()
 
     policy = model.predict(np.matrix(observation))
-    action = np.argmax(policy)
+    action = np.argmax(policy) # we want to upgrade this to sampling
+    # logp = np.max(policy)
     observation, reward, done, info = env.step(action)
 
-    actions.append(action)
     observations.append(observation)
+    actions.append(action)
+    policies.append(policy)
     rewards.append(reward)
 
     if done:
+        # if episode % BATCH_SIZE == 0:
+        #     pass
+        # update model
+        values = to_values(rewards)
+        values -= np.mean(values)
+        values /= np.std(values)
 
-        if episode % BATCH_SIZE == 0:
-            pass
-            # update model
+        for ii in range(len(actions)):
+            policies[ii][actions[ii]] *= values[ii]  # modulate the action we took by our advantage
+        # lg.fit()
+        sgdc.partial_fit(observations, values)
 
         episode += 1
+        actions = []
+        rewards = []
+        observations = []
+        policies = []
         observation = env.reset()
