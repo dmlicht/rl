@@ -11,10 +11,10 @@ env_name = 'CartPole-v0'
 MONITOR_FILE = 'results/' + env_name
 LOG_DIR = 'tmp/keras/' + env_name
 MAX_MEMORY = 40000
-DISCOUNT = .90
+DISCOUNT = .98
 N_EPISODES = 400
 N_STEPS = 200
-BATCH_SIZE = 100
+BATCH_SIZE = 2
 # BATCH_SIZE = 3
 LEARNING_RATE = 1.e-3
 DROPOUT_KEEP_PROB = 1.0
@@ -39,7 +39,11 @@ def main():
     n_possible_actions = env.action_space.n
 
     model = Sequential()
-    model.add(Dense(n_possible_actions, input_dim=n_state_descriptors, activation="softmax"))
+    model.add(Dense(128, input_dim=n_state_descriptors, activation="relu"))
+    model.add(Dropout(.5))
+    model.add(Dense(128, input_dim=n_state_descriptors, activation="relu"))
+    model.add(Dropout(.5))
+    model.add(Dense(n_possible_actions, activation="softmax"))
     model.compile(loss='categorical_crossentropy', optimizer='rmsprop', metrics=['accuracy'])
 
     episode = 0
@@ -48,6 +52,7 @@ def main():
     while episode < N_EPISODES:
         observations, policies, actions, rewards = run_episode(env, model)
         episodes.append(Episode(observations, policies, actions, rewards))
+        episode += 1
         if episode % BATCH_SIZE == 0:
             values = np.concatenate([to_values(ep.rewards) for ep in episodes])
             values -= np.mean(values)
@@ -64,7 +69,6 @@ def main():
             # lg.fit()
             # for ep in episodes:
             #     ep.values = to_values(ep.rewards)
-        episode += 1
 
 
         # policies = np.matrix(policies)  # convert to matrix
@@ -88,19 +92,26 @@ def run_episode(env, model):
     policies = []
     actions = []
     rewards = []
+    turns = 0
 
     while not done:
         if RENDER: env.render()
 
+        turns += 1
+
         policy = model.predict(np.matrix(observation))
-        action = np.argmax(policy)  # we want to upgrade this to sampling
+        # action = np.argmax(policy)  # we want to upgrade this to sampling
+        action = np.random.choice(range(len(policy[0])), p=policy[0])
         # logp = np.max(policy)
         observation, reward, done, info = env.step(action)
 
         observations.append(observation)
         actions.append(action)
         policies.append(policy[0])  # this return
-        rewards.append(reward)
+        if done: # the reward is the length of playtime
+            rewards.append(turns)
+        else:
+            rewards.append(0)
     return observations, policies, actions, rewards
 
 
