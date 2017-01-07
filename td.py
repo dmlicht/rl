@@ -5,7 +5,7 @@ import gym
 import numpy as np
 from keras.models import Sequential
 from keras.layers import Dense, Dropout
-from keras.optimizers import sgd
+from keras.optimizers import sgd, Adam
 from keras.regularizers import WeightRegularizer
 import sys
 import random
@@ -16,31 +16,32 @@ LOG_DIR = 'tmp/keras/' + env_name
 N_EPISODES = 5000
 BATCH_SIZE = 3
 DISCOUNT = .98
-EPISODE_BUFFER = 100
+MEMORY_SIZE = 10000
 LEARNING_RATE = 1.e-3
 EPSILON = 0.1
 """ We're going to represent our q-learning with a NN that takes n_state_descriptors as inputs and evaluates
 n_possible actions as outputs. We pick the action with the best NN output score."""
 
 Episode = namedtuple("Episode", "observations policies actions rewards")
+Step = namedtuple("Step", "state action reward new_state done")
 
 
 # def make_nn(ins: int, outs: int) -> Sequential:
 #     model = Sequential()
-    # model.add(Dense(64, input_dim=ins, activation="relu", W_regularizer=WeightRegularizer(l1=0.001, l2=0.001),
-    #                 b_regularizer=WeightRegularizer(l1=0.5, l2=0.5)))
-    # model.add(Dropout(.5))
-    # model.add(Dense(32,  activation="relu", W_regularizer=WeightRegularizer(l1=0.001, l2=0.001),
-    #                 b_regularizer=WeightRegularizer(l1=0.5, l2=0.5)))
-    # model.add(Dropout(.5))
-    # model.add(Dense(16, activation="relu"))
-    # model.add(Dropout(.5))
-    # model.add(Dense(outs, activation="softmax"))
-    # model.add(Dense(outs))
-    # model.add(Dense(outs, input_dim=ins, W_regularizer=WeightRegularizer(l1=0.001, l2=0.001),
-    #                 b_regularizer=WeightRegularizer(l1=0.1, l2=0.1)))
-    # model.compile(loss='mse', optimizer=sgd(lr=0.01), metrics=['accuracy'])
-    # return model
+# model.add(Dense(64, input_dim=ins, activation="relu", W_regularizer=WeightRegularizer(l1=0.001, l2=0.001),
+#                 b_regularizer=WeightRegularizer(l1=0.5, l2=0.5)))
+# model.add(Dropout(.5))
+# model.add(Dense(32,  activation="relu", W_regularizer=WeightRegularizer(l1=0.001, l2=0.001),
+#                 b_regularizer=WeightRegularizer(l1=0.5, l2=0.5)))
+# model.add(Dropout(.5))
+# model.add(Dense(16, activation="relu"))
+# model.add(Dropout(.5))
+# model.add(Dense(outs, activation="softmax"))
+# model.add(Dense(outs))
+# model.add(Dense(outs, input_dim=ins, W_regularizer=WeightRegularizer(l1=0.001, l2=0.001),
+#                 b_regularizer=WeightRegularizer(l1=0.1, l2=0.1)))
+# model.compile(loss='mse', optimizer=sgd(lr=0.01), metrics=['accuracy'])
+# return model
 
 def make_models(ins: int, outs: int):
     models = []
@@ -50,79 +51,79 @@ def make_models(ins: int, outs: int):
         model.add(Dropout(.5))
         model.add(Dense(1, W_regularizer=WeightRegularizer(l1=0.001, l2=0.001),
                         b_regularizer=WeightRegularizer(l2=1)))
-        model.compile(loss='mse', optimizer=sgd(lr=0.0001), metrics=['accuracy'])
+        model.compile(loss='mse', optimizer=Adam(lr=0.00001), metrics=['accuracy'])
         models.append(model)
     return models
+
 
 def softmax(ins: np.array) -> np.array:
     num = np.exp(ins)
     return num / np.sum(num)
 
 
-class TDAgent:
-    # def __init__(self, model):
-    #     self.model = model
+def _choose(qs):
+    weights = softmax(qs)
+    # return np.random.choice(range(len(qs)), p=weights)  # weighted sample
+    if random.random() > EPSILON:
+        return np.argmax(qs)  # we want to upgrade this to sampling
+    else:
+        return np.random.choice(len(qs))
 
+
+class Memory:
+    def __init__(self, buffer_size=10000):
+        self._buffer = []
+        self._buffer_size = buffer_size
+
+    def append(self, item):
+        self._buffer.append(item)
+        self._buffer = self._buffer[-self._buffer_size:]
+
+    def sample(self, n_samples):
+        return random.sample(self._buffer, n_samples)
+
+    def __len__(self):
+        return len(self._buffer)
+
+
+class TDAgent:
     def __init__(self, models):
+        self.memory = Memory(MEMORY_SIZE)
         self.models = models
+        self._batch_size = 100
 
     def _predict(self, state):
         return [mm.predict(np.matrix(state))[0, 0] for mm in self.models]
 
     def _train(self, state, action, taken_action_value):
         self.models[action].train_on_batch(np.matrix(state), np.matrix(taken_action_value))
-        # for ii, mm in enumerate(self.models):
-        #     self.models[ii].train_on_batch(np.matrix(state), np.matrix(values[ii]))
-            # self.model.train_on_batch(np.matrix(state), predicted_values)
-
-    def _choose(self, qs):
-        weights = softmax(qs)
-        # return np.random.choice(range(len(qs)), p=weights)  # weighted sample
-        if random.random() > EPSILON:
-            return np.argmax(qs)  # we want to upgrade this to sampling
-        else:
-            return np.random.choice(len(qs))
 
     def act(self, state):
-        # print(state)
         qs = self._predict(state)
-        return self._choose(qs)
+        return _choose(qs)
 
+    def reinforce(self, state, action, reward, new_state, done):
+        step = Step(state, action, reward, new_state, done)
+        self.memory.append(step)
+        batch_size_used = min(self._batch_size, len(self.memory))
+        for step in self.memory.sample(batch_size_used):
+            if step.done:
+                self._reinforce_done(step.state, step.action, step.reward)
+            else:
+                self._reinforce(step.state, step.action, step.reward, step.new_state)
 
-        # policy = self.model.predict(np.matrix(state))
-        # weights = softmax(policy[0])
-        # print(weights)
-        # return np.random.choice(range(len(policy[0])), p=weights)  # weighted sample
-
-    def reinforce(self, state, action, reward, new_state):
-        # new_state_max_value = max(self.model.predict(np.matrix(new_state))[0])
-        new_state_max_value = np.mean(self._predict(new_state))
-        taken_action_value = reward + (DISCOUNT * new_state_max_value)
-        # old_predictions = self.model.predict(np.matrix(state))
-        # predicted_values = self.model.predict(np.matrix(state))
-        # print(predicted_values[0], taken_action_value, action)
-        old_predictions = self._predict(state)
+    def _reinforce(self, state, action, reward, new_state):
+        new_state_avg_val = np.mean(self._predict(new_state))
+        taken_action_value = (DISCOUNT * new_state_avg_val)
         predicted_values = self._predict(state)
         predicted_values[action] = taken_action_value
         self._train(state, action, taken_action_value)
-        # print(self.model.get_weights())
-        # self.model.train_on_batch(np.matrix(state), predicted_values)
-        # updated_predictions = self.model.predict(np.matrix(state))
-        updated_predictions = self._predict(state)
-        # print("before update: ", old_predictions, taken_action_value, action)
-        # print("update values: ", predicted_values)
-        # print("after update: ", updated_predictions, taken_action_value, action)
-        # print("")
 
-    def reinforce_done(self, state, action, reward):
-        taken_action_value = -2
-        # predicted_values = self.model.predict(np.matrix(state))
+    def _reinforce_done(self, state, action, reward):
+        taken_action_value = -1
         predicted_values = self._predict(state)
-        # print(predicted_values[0], taken_action_value, action)
         predicted_values[action] = taken_action_value
-        # self._train(state, predicted_values)
         self._train(state, action, taken_action_value)
-        # self.model.train_on_batch(np.matrix(state), predicted_values)
 
 
 def main():
@@ -137,12 +138,13 @@ def main():
     episodes = []
 
     for episode_ii in range(N_EPISODES):
-        render = episode_ii % 20 == 0  # when to output how we're doing
+        render = episode_ii % 1 == 0  # when to output how we're doing
 
         observations, policies, actions, rewards = run_episode(env, agent, render)
 
         episodes.append(Episode(observations, policies, actions, rewards))
-        episodes = episodes[-EPISODE_BUFFER:]
+        # episodes = episodes[-MEMORY_SIZE:]
+        # episodes = episodes[-1:]
 
         episode_ii += 1
         if render:
@@ -164,14 +166,8 @@ def run_episode(env, agent, render=False):
 
         action = agent.act(observation)
         old_observation = observation
-        # policy = model.predict(np.matrix(observation))
-        # action = np.argmax(policy)  # we want to upgrade this to sampling
-        # action = np.random.choice(range(len(policy[0])), p=policy[0])  # too sample
         observation, reward, done, info = env.step(action)
-        if done:
-            agent.reinforce_done(old_observation, action, reward)
-        else:
-            agent.reinforce(old_observation, action, reward, observation)
+        agent.reinforce(old_observation, action, reward, observation, done)
 
         observations.append(observation)
         actions.append(action)
